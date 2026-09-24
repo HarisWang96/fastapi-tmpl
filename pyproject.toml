@@ -1,14 +1,14 @@
 [project]
 name = "fastapi-tmpl"
 version = "0.1.0"
-description = "A production-ready FastAPI async template with SQLAlchemy 2.0, Celery, Redis, and Docker"
+description = "A production-oriented FastAPI async service template with PostgreSQL and Redis"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.13"
 authors = [
     {name = "HarisWang96"}
 ]
-keywords = ["fastapi", "async", "template", "sqlalchemy", "celery", "redis", "postgresql"]
+keywords = ["fastapi", "async", "template", "sqlalchemy", "redis", "postgresql"]
 dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.123.2",
@@ -16,18 +16,25 @@ dependencies = [
     "uvicorn>=0.38.0",
     "pydantic-settings>=2.5.2",
     "alembic>=1.17.2",
-    "celery>=5.6.0",
     "redis>=7.1.0",
-    "celery-redbeat>=2.3.3",
     "loguru>=0.7.3",
-    "pdfplumber>=0.11.0",
-    "openpyxl>=3.1.0",
-    "xlrd>=2.0.0",
-    "msoffcrypto-tool>=5.4.0",
-    "aioboto3>=13.0.0",
-    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+test = [
+    "httpx>=0.28.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+dev = [
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/HarisWang96/fastapi-tmpl"
 Repository = "https://github.com/HarisWang96/fastapi-tmpl"
+
+[tool.uv]
+# This repository is an application, not an installable Python package.
+package = false

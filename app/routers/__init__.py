@@ -1,5 +1,5 @@
 """API routers module"""
 
-from app.routers import health, enums, tasks, upload
+from app.routers import demo, health
 
-__all__ = ["health", "enums", "tasks", "upload"]
+__all__ = ["demo", "health"]

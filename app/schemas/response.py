@@ -1,9 +1,9 @@
 """unified API response schema"""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Generic, TypeVar, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # define generic type for response data
 T = TypeVar("T")
@@ -18,7 +18,9 @@ class ResponseModel(BaseModel, Generic[T]):
     code: int = 200
     message: str = "success"
     data: Optional[T] = None
-    timestamp: datetime = datetime.now()
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     class Config:
         """Pydantic configuration settings"""
@@ -32,7 +34,9 @@ class ErrorResponse(BaseModel):
     code: int
     message: str
     detail: Optional[str] = None
-    timestamp: datetime = datetime.now()
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
     class Config:
         """Pydantic configuration settings"""

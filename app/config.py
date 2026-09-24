@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
     # database configuration
-    DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/dbname"
+    DATABASE_URL: str
     DATABASE_SCHEMA: str = "public"  # database schema name
     # database connection pool settings
     DATABASE_POOL_SIZE: int = 5  # number of connections to keep open
@@ -27,29 +27,19 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # Redis configuration
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str
+    REDIS_MAX_CONNECTIONS: int = 100
+    REDIS_CONNECT_TIMEOUT: float = 1.0
+    REDIS_TIMEOUT: float = 2.0
 
-    # Celery configuration
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    CORS_ALLOW_CREDENTIALS: bool = False
 
-    # AWS S3 configuration
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_REGION: str = "us-east-1"
-    AWS_S3_BUCKET: str = ""
-    AWS_S3_PREFIX: str = "uploads"  # file prefix/folder in bucket
-    AWS_S3_PRESIGNED_EXPIRATION: int = 3600  # presigned URL expiration in seconds
-
-    # Upload configuration
-    UPLOAD_MAX_IMAGE_SIZE: int = 5 * 1024 * 1024  # 5MB
-    UPLOAD_ALLOWED_IMAGE_TYPES: str = "image/jpeg,image/png,image/gif,image/webp"
-
-    class Config:
-        """Pydantic configuration settings"""
-
-        env_file = ".env"
-        case_sensitive = True
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": True,
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

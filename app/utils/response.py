@@ -1,7 +1,7 @@
 """response utility functions"""
 
 from typing import Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi.responses import JSONResponse
 
@@ -27,7 +27,7 @@ def success_response(
         code=code,
         message=message,
         data=data,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
@@ -52,7 +52,7 @@ def error_response(
         code=code,
         message=message,
         detail=detail,
-        timestamp=datetime.now(),
+        timestamp=datetime.now(timezone.utc),
     )
     return JSONResponse(
         status_code=code,

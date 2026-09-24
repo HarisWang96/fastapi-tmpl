@@ -1,7 +1,13 @@
 """database connection module"""
 
 from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from collections.abc import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    create_async_engine,
+    async_sessionmaker,
+)
 from sqlalchemy.orm import declarative_base
 
 from app.config import settings
@@ -33,26 +39,14 @@ metadata = MetaData(schema=settings.DATABASE_SCHEMA)
 Base = declarative_base(metadata=metadata)
 
 
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     get database session dependency injection function
     can be used in routes: db: AsyncSession = Depends(get_db)
     """
     async with AsyncSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-
-
-async def init_db():
-    """initialize database, create all tables"""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        # Transaction boundaries belong to the application/service layer.
+        yield session
 
 
 async def close_db():

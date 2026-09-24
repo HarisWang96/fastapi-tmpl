@@ -4,27 +4,37 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from redis.asyncio import Redis
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
-from app.database import init_db, close_db
+from app.database import close_db, engine
 from app.logger import logger
-from app.routers import health, enums, tasks, upload
+from app.routers import demo, health
 from app.utils.response import error_response
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(app: FastAPI):
     """application lifecycle management"""
     # when the application is starting up
     logger.info("Application starting up...")
-    await init_db()
-    logger.info("Database initialized")
-    yield
-    # when the application is shutting down
-    logger.info("Application shutting down...")
-    await close_db()
-    logger.info("Database connection closed")
+    redis = Redis.from_url(
+        settings.REDIS_URL,
+        decode_responses=True,
+        max_connections=settings.REDIS_MAX_CONNECTIONS,
+        socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+        socket_timeout=settings.REDIS_TIMEOUT,
+    )
+    app.state.db_engine = engine
+    app.state.redis = redis
+    try:
+        yield
+    finally:
+        logger.info("Application shutting down...")
+        await redis.aclose()
+        await close_db()
+        logger.info("Application resources closed")
 
 
 # create FastAPI application instance
@@ -38,8 +48,8 @@ app = FastAPI(
 # configure CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # in production environment, should set specific domains
-    allow_credentials=True,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -78,15 +88,7 @@ async def general_exception_handler(_request: Request, exc: Exception):
 
 # register routers
 app.include_router(health.router)
-app.include_router(enums.router, prefix="/api/v1")
-app.include_router(tasks.router, prefix="/api/v1")
-app.include_router(upload.router, prefix="/api/v1")
-
-# Add your routers here
-# Example:
-# from app.routers import users, items
-# app.include_router(users.router, prefix="/api/v1")
-# app.include_router(items.router, prefix="/api/v1")
+app.include_router(demo.router)
 
 
 @app.get("/")
