@@ -1,0 +1,45 @@
+[project]
+name = "fastapi-svc"
+version = "0.1.0"
+description = "微服务通用骨架（FastAPI + MySQL/Redis，不含鉴权）"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.162",
+    "pydantic>=2.14",
+    "pydantic-settings>=2.16",
+    "uvicorn[standard]>=0.54",
+    "loguru>=0.7",
+    "sqlalchemy>=2.1",
+    "redis>=8.1",
+    "alembic>=1.16",
+    # Pure Python driver without libmysqlclient; rsa extra provides cryptography for MySQL 8 caching_sha2_password.
+    "PyMySQL[rsa]>=1.2",
+    "tzdata>=2026.6",
+]
+
+[dependency-groups]
+test = [
+    "pytest>=9.2",
+    # Starlette TestClient uses httpx2; httpx emits a StarletteDeprecationWarning.
+    "httpx2>=0.28",
+]
+dev = [
+    { include-group = "test" },
+    "ruff>=0.17",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

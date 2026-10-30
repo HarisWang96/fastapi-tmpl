@@ -1,0 +1,28 @@
+# 版本控制与 IDE
+.git
+.idea
+.vscode
+
+# Python 运行产物
+__pycache__/
+*.pyc
+.venv/
+
+# 本地日志与运行时文件
+logs/
+
+# 本机凭据：settings 会读 CWD 下的 .env，留在构建上下文里就会被打进镜像层
+.env
+.env.*
+
+# CI 配置与镜像描述（镜像运行时不需要）
+Jenkinsfile
+Dockerfile
+.dockerignore
+
+# 文档
+*.md
+
+# 本地数据库文件（SQLite 测试产物）
+*.db
+*.sqlite3
