@@ -27,7 +27,7 @@ FastAPI + MySQL（SQLAlchemy 同步 ORM / 裸 SQL 共用一套池）+ Redis + Al
 │   └── models/                 # ORM 模型（Base + 注册处）
 ├── alembic/                    # 迁移；env.py 复用 app.core.db.orm 的 Engine
 ├── tests/                      # pytest，不依赖外部 MySQL/Redis
-├── Dockerfile                  # 多阶段 + 非 root + uvicorn supervisor
+├── Dockerfile                  # 多阶段 + 非 root + 单进程 uvicorn
 └── .env.example
 ```
 
@@ -114,15 +114,18 @@ uv run alembic upgrade head
 
 ## 部署
 
-- 日志只出 stderr 由 K8s 采集（镜像内置 `LOG_TO_FILE=false`）：loguru 的锁与队列只在进程内生效，
-  多 worker 共写同一文件时轮转/清理会互相踩
-- 进程数由 `WEB_CONCURRENCY` 控制（默认 2）；`--timeout-graceful-shutdown 30`
+- 日志只出 stderr 由 K8s 采集（镜像内置 `LOG_TO_FILE=false`）
+- 容器内固定单进程，扩容交给 Deployment 副本数；不要再加 `--workers`，
+  否则会和 HPA 形成两个互不相知的扩缩容维度。`--timeout-graceful-shutdown 30`
   要求 K8s `terminationGracePeriodSeconds` ≥ 30
+- 单进程 pod 的 `requests.cpu` 不应超过 1 核：单进程最多吃满一核，
+  requests 设成 2 时 HPA 按 CPU 永远不会触发
 - 只有在入口代理可信网段内时才设置 `FORWARDED_ALLOW_IPS`，不要在不可信入站环境设为 `*`；
   默认仅信任 loopback 转发头
 - 探针：livenessProbe 只打 `/livez`；readinessProbe 打 `/readyz`。
   `/readyz` 会探 MySQL/Redis，依赖抖动时回 503——配成 liveness 会触发全量重启
-- `MYSQL_POOL_MAX_CONNECTIONS` 是**单进程**上限，实际连接数 = 该值 × `WEB_CONCURRENCY` × 副本数
+- `MYSQL_POOL_MAX_CONNECTIONS` 是**单进程单库**上限，总连接数 =
+  该值 × 库数 × 副本数；还要给迁移 Job、探针和监控留余量
 - 端口由 `PORT` 控制（镜像默认 8000），按服务改 Dockerfile 的 `EXPOSE` 与 K8s Service
 - CI 沿用现有 Jenkinsfile / K8s 清单；本仓库不含它们
 

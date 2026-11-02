@@ -2,7 +2,7 @@
 # Generic microservice image
 # Build dependencies in the builder stage and copy only the virtual environment
 # into the runtime image. uv and its build cache are not shipped to production.
-# Uvicorn's multiprocess supervisor starts the configured number of workers.
+# One Uvicorn process per container; scaling is handled by Kubernetes replicas.
 # ============================================================
 
 # Keep the Python image identical in both stages so the virtual environment is portable.
@@ -52,9 +52,10 @@ USER app
 # Keep this port aligned with the default CMD and the Kubernetes Service.
 EXPOSE 8000
 
-# WEB_CONCURRENCY defaults to two workers. Size it with CPU and database pool
-# budgets; the database connection ceiling is workers x pool size x replicas.
+# One process per container: Kubernetes scales with replicas, keeping per-pod
+# lifecycle, probes and database pool budgeting predictable. The connection
+# ceiling is pool size x databases x replicas.
 # Set FORWARDED_ALLOW_IPS to trusted proxy CIDRs when running behind an ingress.
 # Keep terminationGracePeriodSeconds at least as long as the graceful shutdown timeout.
 # exec replaces the shell so Uvicorn receives SIGTERM as PID 1.
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --workers \"${WEB_CONCURRENCY:-2}\" --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1,::1}\" --backlog 4096 --timeout-keep-alive 5 --timeout-graceful-shutdown 30 --limit-max-requests \"${WEB_MAX_REQUESTS:-50000}\" --limit-max-requests-jitter 5000 --no-access-log --log-level info"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1,::1}\" --timeout-graceful-shutdown 30 --no-access-log"]

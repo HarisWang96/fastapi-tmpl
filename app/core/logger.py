@@ -1,9 +1,8 @@
 """Centralized logging through Loguru.
 
 Local development writes to stderr and files under LOG_DIR with rotation and
-retention. Containers set LOG_TO_FILE=false and write to stderr for collection.
-Loguru locks and queues are process-local, so multiple Uvicorn workers writing
-one rotating file can race during rename and cleanup.
+retention. Containers set LOG_TO_FILE=false and write to stderr for collection;
+file logging is a development convenience only.
 
 Standard-library logging (including Uvicorn) is forwarded to Loguru for one format.
 """
@@ -17,6 +16,13 @@ from loguru import logger
 from app.core.clock import TZ
 from app.core.config import settings
 
+# Files omit colors so the same layout can be parsed by log collectors.
+_CONSOLE_FORMAT = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "
+    "<cyan>{name}</cyan>:{line} | <level>{message}</level>"
+)
+_FILE_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{line} | {message}"
+
 
 class _InterceptHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
@@ -24,8 +30,15 @@ class _InterceptHandler(logging.Handler):
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        frame, depth = logging.currentframe(), 2
-        while frame is not None and frame.f_code.co_filename == logging.__file__:
+        # Skip logging's internal frames so Loguru reports the real caller
+        # (for example uvicorn.server) instead of logging/__init__.py.
+        frame = logging.currentframe()
+        frame = frame.f_back if frame is not None else None
+        depth = 1
+        while frame is not None:
+            module = frame.f_globals.get("__name__", "")
+            if module != "logging" and not module.startswith("logging."):
+                break
             frame = frame.f_back
             depth += 1
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
@@ -39,6 +52,7 @@ def _add_file(path: Path, level: str, retention: str) -> None:
         rotation="10 MB",
         compression="gz",
         encoding="utf-8",
+        format=_FILE_FORMAT,
         enqueue=True,
         backtrace=True,
         diagnose=settings.DEBUG,
@@ -58,10 +72,7 @@ def setup_logging() -> None:
         level=settings.LOG_LEVEL,
         backtrace=True,
         diagnose=settings.DEBUG,
-        format=(
-            "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:{line} | <level>{message}</level>"
-        ),
+        format=_CONSOLE_FORMAT,
     )
 
     if settings.LOG_TO_FILE:
@@ -86,6 +97,11 @@ def setup_logging() -> None:
     access_logger = logging.getLogger("uvicorn.access")
     access_logger.handlers = [logging.NullHandler()]
     access_logger.propagate = False
+
+    # httpx logs one INFO line per outbound call, duplicating the callee's access log
+    # and lacking the request ID. Errors still surface at WARNING and above.
+    for name in ("httpx", "httpx2", "httpcore", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 setup_logging()
