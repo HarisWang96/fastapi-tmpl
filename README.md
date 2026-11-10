@@ -1,7 +1,9 @@
 # fastapi-svc — 微服务通用骨架
 
 FastAPI + MySQL（SQLAlchemy 同步 ORM / 裸 SQL 共用一套池）+ Redis + Alembic。
-**不含任何鉴权代码**：JWT 的签发与校验属于 auth 服务，下游服务只读网关注入的身份头。
+**不做认证**：JWT 的签发与校验属于 identity-svc，下游服务只读网关注入的身份头。
+**权限判定在服务侧**：路由声明权限码，服务调 authz-svc（PDP）判定并做数据范围过滤；
+网关只负责认证和路由级准入，不做逐接口权限判定。
 
 新服务从本仓库 clone 后，替换 `APP_NAME`、删掉示例域，即可开始写业务。
 
@@ -15,14 +17,18 @@ FastAPI + MySQL（SQLAlchemy 同步 ORM / 裸 SQL 共用一套池）+ Redis + Al
 │   │   ├── config.py           # pydantic-settings，全部配置来自环境变量/.env
 │   │   ├── clock.py            # 业务时间：按 TIMEZONE 取 naive 本地时间
 │   │   ├── logger.py           # loguru + stdlib 桥接，容器内只出 stderr
+│   │   ├── context.py          # request_id ContextVar（跨线程传递）
+│   │   ├── metrics.py          # Prometheus 指标 + /metrics 令牌门禁
 │   │   ├── exceptions.py       # AppError 体系 + 全局 handler
-│   │   ├── middleware.py       # 请求 ID + 访问日志（纯 ASGI）
+│   │   ├── middleware.py       # 请求 ID + 访问日志 + HTTP 指标（纯 ASGI）
 │   │   ├── schemas/common.py   # 统一响应 {code,message,data,timestamp}
 │   │   └── db/                 # orm / mysql（裸 SQL）/ redis
 │   ├── api/
 │   │   ├── deps.py             # get_db / get_session / get_redis / Caller
+│   │   ├── authz_deps.py       # require_perm / require_scope + 本地 TTL 缓存
 │   │   ├── router.py           # 唯一的路由聚合点
 │   │   └── routes/             # health.py（三探针）、demo.py（冒烟）
+│   ├── clients/authz.py        # authz-svc PDP 客户端
 │   ├── modules/_example/       # 示例域：api / service / repository / schemas
 │   └── models/                 # ORM 模型（Base + 注册处）
 ├── alembic/                    # 迁移；env.py 复用 app.core.db.orm 的 Engine
@@ -53,7 +59,7 @@ RUN_MYSQL_TESTS=1 uv run pytest -q tests/test_mysql_integration.py
 | 请求头 | 含义 | 缺失时 |
 |---|---|---|
 | `X-User-Id` | 调用者用户 ID（整数） | `CallerDep` 返回 `None`；`RequiredCallerDep` 返回 401 |
-| `X-App-Id` | 调用方应用标识 | 同上为 `None` |
+| `X-App-Id` | 网关从 access token 的 `app_id` 声明注入的应用标识 | 同上为 `None` |
 | `X-Proxy-Token` | 可选代理令牌 | 配置了 `TRUSTED_PROXY_TOKEN` 才校验，否则忽略 |
 
 ```python
@@ -70,6 +76,87 @@ def create_order(caller: RequiredCallerDep): ...   # 必须有身份，否则 40
 `TRUSTED_PROXY_TOKEN` 在 `APP_ENV=prod` 时必填，并由服务逐请求校验；它仍不能替代网络策略。
 网关必须配置相同的密钥。开发/测试环境可以不设置。
 
+## 权限判定（服务侧）
+
+| 层 | 职责 |
+|---|---|
+| 网关 | JWT 验签、注入 `X-User-Id` / `X-App-Id`、公开接口 allowlist、路由级准入（public / jwt） |
+| 服务（本骨架） | 路由声明的权限码、调 authz-svc 判定、数据范围过滤、资源归属校验 |
+| authz-svc | PDP：权限点、角色、显式拒绝、数据范围、判定版本 |
+
+细粒度权限不能只放网关：网关看不到资源归属，内部调用/定时任务/导出也不经过网关。
+
+```python
+from typing import Annotated
+
+from fastapi import Depends
+
+from app.api.authz_deps import require_perm, require_scope
+from app.api.deps import Caller
+from app.clients.authz import DataScope
+
+@router.get("/products")
+async def list_products(
+    caller: Annotated[Caller, Depends(require_perm("product:read"))],
+    scope: Annotated[DataScope, Depends(require_scope("product", "store"))],
+):
+    # scope.filter_values(): None = 不过滤（ALL），[] = 无可见数据（NONE），
+    # 其余为 IN 值列表；把这些值用 %s 绑定进 WHERE，不要拼字符串。
+    ...
+```
+
+- 新接口必须显式声明权限码；`check_api` 的路径映射只用于迁移旧接口兜底。
+- 权限服务不可用或响应异常时 **fail closed**，返回 503，不会放行。
+- 判定结果在进程内缓存 `AUTHZ_CACHE_TTL_SECONDS`（默认 30 秒），
+  这是权限撤销/停用的最大延迟；设为 `0` 可关闭缓存、每次实时判定。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `AUTHZ_BASE_URL` | `http://authz-svc:8000` | authz-svc 地址 |
+| `AUTHZ_TIMEOUT_SECONDS` | `3` | 调用超时 |
+| `AUTHZ_CACHE_TTL_SECONDS` | `30` | 本地判定缓存，0 为关闭 |
+| `INTERNAL_API_TOKEN` | 无 | 服务间令牌，必须与 authz-svc 一致；prod 必填 |
+| `METRICS_TOKEN` | 无 | `/metrics` 访问令牌；prod 必填，也建议限制抓取来源网络 |
+
+## 幂等与事件
+
+**幂等（写接口防重复提交）**
+
+```python
+from fastapi import Request
+from app.core.idempotency import idempotent
+
+@router.post("/orders")
+    @idempotent(required=True)          # request: Request 必须出现在签名里
+def create_order(request: Request, ...): ...
+```
+
+- 客户端带 `Idempotency-Key`；首次执行并存储响应，重放返回同一响应，不重复写库。
+  若端点返回普通数据但声明了非 200 状态码，用 `@idempotent(status_code=201)` 同步声明；
+  显式 `Response` 会保留状态码、响应体和响应头（不重放 request ID 等逐请求头）
+- 同 key 不同请求体 → 409；同 key 并发未完成 → 409；处理异常会释放 key 供重试
+- 存储表 `sys_idempotency`，按 `scope`（app/user/method/path）隔离，默认保留 24 小时
+- `required=False`（默认）时没有请求头就按普通请求执行，适合渐进接入
+
+**事件（transactional outbox + RabbitMQ）**
+
+```python
+from app.core.events import emit_event, subscribe
+
+# 与业务写入同一个事务：commit 后事件才可能被投递
+emit_event(session, "order.created", {"order_id": order_id})
+
+@subscribe("order.created")
+def on_order_created(payload: dict, headers: dict) -> None: ...
+```
+
+- `emit_event` 只写 `sys_outbox`，不直接发 MQ；relay 后台任务负责发布并标记
+- 交换器 `EVENT_EXCHANGE`（topic、持久化）；消费队列每服务一个，绑定 `@subscribe` 的 topic
+- 投递语义为 **at-least-once**：消费成功后写 `sys_event_consumed` 去重；
+  handler 有外部副作用时必须自身幂等
+- 消费失败按 `CONSUMER_MAX_RETRIES` 退避重试，仍失败转死信队列 `<queue>.dlq`
+- `EVENT_ENABLED=false`（默认）时完全不连 broker；开启时必须配置 `EVENT_BROKER_URL`
+
 ## 契约约定
 
 1. 业务代码只 `raise AppError(...)`，不要自己拼错误响应
@@ -81,6 +168,8 @@ def create_order(caller: RequiredCallerDep): ...   # 必须有身份，否则 40
    失败时客户端已经拿到 200，那一行只能兜底
 6. 业务时间统一用 `app.core.clock.now()`，不要直接 `datetime.now()`：
    库里 DATETIME 是 naive 本地时间，口径由 `TIMEZONE`（默认 `Asia/Shanghai`）决定，与容器 TZ 无关
+7. 需要权限的接口用 `require_perm(...)` / `require_scope(...)` 声明，不在 handler 内手写权限判断；
+   未声明权限的接口默认只受网关的登录态约束
 
 ## 数据访问
 
@@ -114,7 +203,13 @@ uv run alembic upgrade head
 
 ## 部署
 
-- 日志只出 stderr 由 K8s 采集（镜像内置 `LOG_TO_FILE=false`）
+- 日志只出 stderr 由容器平台采集（镜像内置 `LOG_TO_FILE=false`）；
+  `LOG_FORMAT=json` 时每行一条 JSON（自动带 `service` 与 `request_id`），
+  `text` 保留人类可读格式
+- `/metrics` 暴露 Prometheus 指标（`http_requests_total` / `http_request_duration_seconds`），
+  path 标签用路由模板而非原始 URL；配置 `METRICS_TOKEN` 后需带 `X-Metrics-Token`
+  或 Bearer；生产启动时必须配置该令牌。业务指标在各自模块定义 Counter，在 `/metrics` 一并输出
+- `EVENT_ENABLED=true` 时，`/readyz` 会检查 RabbitMQ 发布连接是否就绪；broker 不可用会返回 503
 - 容器内固定单进程，扩容交给 Deployment 副本数；不要再加 `--workers`，
   否则会和 HPA 形成两个互不相知的扩缩容维度。`--timeout-graceful-shutdown 30`
   要求 K8s `terminationGracePeriodSeconds` ≥ 30
@@ -135,7 +230,7 @@ uv run alembic upgrade head
 
 1. `app/modules/_example/`
 2. `app/api/routes/demo.py` 以及 `app/api/router.py` 里对它的引用
-3. `tests/` 里针对 demo 的断言（`test_caller.py` / `test_contract.py` 中路径同步替换）
+3. `tests/` 里针对 demo 的断言（`test_caller.py` / `test_contract.py` / `test_authz.py` 中路径同步替换）
 
 完成后验收：
 

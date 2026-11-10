@@ -1,13 +1,17 @@
 """Application entry point: uvicorn app.main:app."""
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import Response
 
+from app.api.authz_deps import close_authz_client
 from app.api.router import build_api_router
+from app.core import events, idempotency, metrics
 from app.core.config import settings
 from app.core.db.orm import dispose_all as close_orm_engines
 from app.core.db.redis import close_all as close_redis_pools
@@ -20,11 +24,22 @@ from app.core.schemas.common import ApiResponse, success
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info(f"{settings.APP_NAME} 启动 env={settings.APP_ENV} version={settings.APP_VERSION}")
+    cleanup_stop = asyncio.Event()
+    cleanup_task = asyncio.create_task(idempotency.cleanup_forever(cleanup_stop))
+    event_runtime = await events.start_event_bus()
+    _app.state.event_runtime = event_runtime
     try:
         yield
     finally:
+        cleanup_stop.set()
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
+        await events.close_event_bus(event_runtime)
+        _app.state.event_runtime = None
         close_orm_engines()
         close_redis_pools()
+        await close_authz_client()
         logger.info("连接池已释放，服务退出")
 
 
@@ -55,6 +70,10 @@ def create_app() -> FastAPI:
 
     # Mount all endpoints through one router, including their prefixes and dependencies.
     app.include_router(build_api_router())
+
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus_metrics(request: Request) -> Response:
+        return metrics.render(request)
 
     @app.get("/", response_model=ApiResponse[dict[str, str]], include_in_schema=False)
     def root() -> ApiResponse[Any]:

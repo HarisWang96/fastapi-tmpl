@@ -15,6 +15,7 @@ from loguru import logger
 
 from app.core.clock import TZ
 from app.core.config import settings
+from app.core.context import request_id_ctx
 
 # Files omit colors so the same layout can be parsed by log collectors.
 _CONSOLE_FORMAT = (
@@ -45,35 +46,46 @@ class _InterceptHandler(logging.Handler):
 
 
 def _add_file(path: Path, level: str, retention: str) -> None:
-    logger.add(
-        path,
-        level=level,
-        retention=retention,
-        rotation="10 MB",
-        compression="gz",
-        encoding="utf-8",
-        format=_FILE_FORMAT,
-        enqueue=True,
-        backtrace=True,
-        diagnose=settings.DEBUG,
-    )
+    options: dict[str, object] = {
+        "level": level,
+        "retention": retention,
+        "rotation": "10 MB",
+        "compression": "gz",
+        "encoding": "utf-8",
+        "enqueue": True,
+        "backtrace": True,
+        "diagnose": settings.DEBUG,
+    }
+    if settings.LOG_FORMAT == "json":
+        # serialize and format are mutually exclusive: the JSON line is the whole record.
+        options["serialize"] = True
+    else:
+        options["format"] = _FILE_FORMAT
+    logger.add(path, **options)
 
 
 def _patch_record(record: dict) -> None:
     # Loguru uses the process timezone; convert timestamps to the business timezone.
     record["time"] = record["time"].astimezone(TZ)
+    record["extra"].setdefault("service", settings.APP_NAME)
+    request_id = request_id_ctx.get()
+    if request_id:
+        record["extra"].setdefault("request_id", request_id)
 
 
 def setup_logging() -> None:
     logger.remove()
     logger.configure(patcher=_patch_record)
-    logger.add(
-        sys.stderr,
-        level=settings.LOG_LEVEL,
-        backtrace=True,
-        diagnose=settings.DEBUG,
-        format=_CONSOLE_FORMAT,
-    )
+    sink: dict[str, object] = {
+        "level": settings.LOG_LEVEL,
+        "backtrace": True,
+        "diagnose": settings.DEBUG,
+    }
+    if settings.LOG_FORMAT == "json":
+        sink["serialize"] = True
+    else:
+        sink["format"] = _CONSOLE_FORMAT
+    logger.add(sys.stderr, **sink)
 
     if settings.LOG_TO_FILE:
         try:

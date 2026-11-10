@@ -16,13 +16,16 @@ dependencies = [
     # Pure Python driver without libmysqlclient; rsa extra provides cryptography for MySQL 8 caching_sha2_password.
     "PyMySQL[rsa]>=1.2",
     "tzdata>=2026.6",
+    # Async HTTP client used to call authz-svc for service-side authorization.
+    "httpx2>=0.28",
+    "prometheus-client>=0.26.0",
+    # Transactional outbox relay and event consumers.
+    "aio-pika>=9.5",
 ]
 
 [dependency-groups]
 test = [
     "pytest>=9.2",
-    # Starlette TestClient uses httpx2; httpx emits a StarletteDeprecationWarning.
-    "httpx2>=0.28",
 ]
 dev = [
     { include-group = "test" },

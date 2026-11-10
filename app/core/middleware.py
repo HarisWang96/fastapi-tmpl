@@ -14,6 +14,8 @@ import uuid
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.core import metrics
+from app.core.context import request_id_ctx
 from app.core.logger import logger
 
 # Keep these probe paths in sync with app/api/routes/health.py.
@@ -37,6 +39,7 @@ class RequestContextMiddleware:
             else uuid.uuid4().hex
         )
         scope.setdefault("state", {})["request_id"] = request_id
+        context_token = request_id_ctx.set(request_id)
         started = time.perf_counter()
         status_code = 500
 
@@ -50,14 +53,22 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
+            request_id_ctx.reset(context_token)
+            elapsed = time.perf_counter() - started
             path = scope.get("path")
+            route = scope.get("route")
+            metrics.observe_http(
+                method=str(scope.get("method")),
+                path=getattr(route, "path", None) or "unmatched",
+                status=status_code,
+                seconds=elapsed,
+            )
             if path in _PROBE_PATHS:
                 logger.debug(f"[{request_id}] {scope.get('method')} {path} status={status_code}")
             else:
-                elapsed_ms = (time.perf_counter() - started) * 1000
                 logger.info(
                     f"[{request_id}] {scope.get('method')} {path} "
-                    f"status={status_code} elapsed={elapsed_ms:.1f}ms"
+                    f"status={status_code} elapsed={elapsed * 1000:.1f}ms"
                 )
 
 

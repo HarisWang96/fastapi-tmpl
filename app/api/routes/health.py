@@ -26,19 +26,19 @@ def liveness() -> dict[str, str]:
 
 
 @router.get("/readyz")
-async def readiness() -> JSONResponse:
-    result = await _dependency_status()
+async def readiness(request: Request) -> JSONResponse:
+    result = await _dependency_status(request)
     return JSONResponse(status_code=200 if result["status"] == "ok" else 503, content=result)
 
 
 @router.get("/healthz")
 async def health(request: Request) -> JSONResponse:
-    result = await _dependency_status()
+    result = await _dependency_status(request)
     body = {"service": request.app.title, "version": request.app.version, **result}
     return JSONResponse(status_code=200 if result["status"] == "ok" else 503, content=body)
 
 
-async def _dependency_status() -> dict[str, Any]:
+async def _dependency_status(request: Request) -> dict[str, Any]:
     probes = {
         "mysql": _probe_mysql,
         "redis": _probe_redis,
@@ -46,6 +46,14 @@ async def _dependency_status() -> dict[str, Any]:
     selected = settings.READINESS_DEPENDENCIES
     results = await asyncio.gather(*(asyncio.to_thread(probes[name]) for name in selected))
     dependencies = dict(zip(selected, results, strict=True))
+    if settings.EVENT_ENABLED:
+        runtime = getattr(request.app.state, "event_runtime", None)
+        publisher = getattr(runtime, "publisher", None)
+        dependencies["rabbitmq"] = (
+            {"status": "up"}
+            if publisher is not None and publisher.connected
+            else {"status": "down"}
+        )
     healthy = all(item["status"] == "up" for item in dependencies.values())
     return {"status": "ok" if healthy else "degraded", "dependencies": dependencies}
 

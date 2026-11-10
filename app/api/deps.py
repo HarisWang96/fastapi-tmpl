@@ -23,7 +23,7 @@ from app.core.config import settings
 from app.core.db.mysql import MysqlConnection, mysql_pool
 from app.core.db.orm import get_session_factory
 from app.core.db.redis import get_redis
-from app.core.exceptions import AuthError
+from app.core.exceptions import AuthError, ServiceUnavailableError
 
 
 def get_db() -> Iterator[MysqlConnection]:
@@ -117,3 +117,18 @@ async def require_caller(caller: Annotated[Caller, Depends(get_caller)]) -> Call
 
 CallerDep = Annotated[Caller, Depends(get_caller)]
 RequiredCallerDep = Annotated[Caller, Depends(require_caller)]
+
+def require_internal_token(
+    x_internal_token: Annotated[str | None, Header(alias="X-Internal-Token")] = None,
+) -> None:
+    """Guard service-to-service endpoints; callers must present INTERNAL_API_TOKEN."""
+    expected = settings.INTERNAL_API_TOKEN
+    if expected is None:
+        raise ServiceUnavailableError("未配置 INTERNAL_API_TOKEN")
+    if not x_internal_token or not hmac.compare_digest(
+        x_internal_token.encode("utf-8"), expected.get_secret_value().encode("utf-8")
+    ):
+        raise AuthError("内部令牌无效或缺失")
+
+
+InternalTokenDep = Annotated[None, Depends(require_internal_token)]

@@ -43,3 +43,14 @@ def test_readyz_is_healthy_without_hard_dependencies(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "dependencies": {}}
+
+
+def test_readyz_checks_rabbitmq_when_events_are_enabled(client, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "READINESS_DEPENDENCIES", [])
+    monkeypatch.setattr(settings, "EVENT_ENABLED", True)
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json()["dependencies"]["rabbitmq"]["status"] == "down"

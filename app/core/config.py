@@ -1,8 +1,9 @@
 """Application configuration loaded from environment variables or .env.
 
 This service does not implement authentication. JWT issuance and validation
-belong to the auth service; downstream services only read gateway-injected
-identity headers (see Caller in app/api/deps.py).
+belong to identity-svc; downstream services only read gateway-injected identity
+headers (see Caller in app/api/deps.py). Fine-grained authorization is enforced
+in the service against authz-svc (see app/api/authz_deps.py).
 """
 
 from typing import Literal
@@ -52,6 +53,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_RETENTION: str = "7 days"
     LOG_TO_FILE: bool = True
+    # json writes one structured line per record for collectors; text stays human-readable.
+    LOG_FORMAT: Literal["text", "json"] = "text"
+    # When set, /metrics requires X-Metrics-Token or a matching Bearer token.
+    METRICS_TOKEN: SecretStr | None = None
 
     # Business-local naive timestamps use this zone, independent of the container timezone.
     TIMEZONE: str = "Asia/Shanghai"
@@ -81,7 +86,43 @@ class Settings(BaseSettings):
     # must restrict ingress to the gateway; this token is an additional check.
     TRUSTED_PROXY_TOKEN: SecretStr | None = None
 
-    @field_validator("TRUSTED_PROXY_TOKEN", mode="before")
+    # Service-side authorization (PEP): routes declare permission codes and ask
+    # authz-svc (PDP) for the decision. INTERNAL_API_TOKEN authenticates this
+    # service to authz-svc; it must match authz-svc's INTERNAL_API_TOKEN.
+    AUTHZ_BASE_URL: str = "http://authz-svc:8000"
+    AUTHZ_TIMEOUT_SECONDS: float = Field(default=3.0, gt=0)
+    # In-process decision cache. Bounds how long a revoked permission can stay
+    # effective; set 0 to disable caching. Keep it short for admin operations.
+    AUTHZ_CACHE_TTL_SECONDS: int = Field(default=30, ge=0, le=300)
+    INTERNAL_API_TOKEN: SecretStr | None = None
+
+    # ---- Idempotency (write endpoints that accept Idempotency-Key) ----
+    IDEMPOTENCY_TTL_SECONDS: int = Field(default=86_400, ge=60)
+    # Expired rows are purged by a background task; 0 disables the cleaner.
+    IDEMPOTENCY_CLEANUP_INTERVAL_SECONDS: int = Field(default=3_600, ge=0)
+
+    # ---- Transactional outbox + RabbitMQ event bus ----
+    EVENT_ENABLED: bool = False
+    EVENT_BROKER_URL: SecretStr | None = None
+    EVENT_EXCHANGE: str = "meihao.events"
+    EVENT_DLX_EXCHANGE: str = "meihao.events.dlx"
+    # Consumer queue name; defaults to "<APP_NAME>.events" when empty.
+    EVENT_QUEUE: str = ""
+    OUTBOX_POLL_INTERVAL_SECONDS: float = Field(default=1.0, gt=0)
+    OUTBOX_BATCH_SIZE: int = Field(default=100, ge=1, le=1000)
+    OUTBOX_LEASE_SECONDS: int = Field(default=30, ge=5)
+    OUTBOX_MAX_ATTEMPTS: int = Field(default=10, ge=1)
+    CONSUMER_PREFETCH: int = Field(default=10, ge=1, le=1000)
+    CONSUMER_MAX_RETRIES: int = Field(default=3, ge=0)
+    CONSUMER_RETRY_BACKOFF_SECONDS: float = Field(default=1.0, ge=0)
+
+    @field_validator(
+        "TRUSTED_PROXY_TOKEN",
+        "INTERNAL_API_TOKEN",
+        "METRICS_TOKEN",
+        "EVENT_BROKER_URL",
+        mode="before",
+    )
     @classmethod
     def _blank_token_as_none(cls, value: object) -> object:
         # Normalize empty Kubernetes Secrets or .env values to None.
@@ -95,6 +136,12 @@ class Settings(BaseSettings):
             raise ValueError(f"TIMEZONE 无效: {self.TIMEZONE!r}") from exc
         if self.APP_ENV == "prod" and self.TRUSTED_PROXY_TOKEN is None:
             raise ValueError("生产环境必须配置 TRUSTED_PROXY_TOKEN，以保护网关注入的身份头")
+        if self.APP_ENV == "prod" and self.INTERNAL_API_TOKEN is None:
+            raise ValueError("生产环境必须配置 INTERNAL_API_TOKEN，以调用 authz-svc")
+        if self.APP_ENV == "prod" and self.METRICS_TOKEN is None:
+            raise ValueError("生产环境必须配置 METRICS_TOKEN，以保护 /metrics")
+        if self.EVENT_ENABLED and self.EVENT_BROKER_URL is None:
+            raise ValueError("EVENT_ENABLED=true 时必须配置 EVENT_BROKER_URL")
         return self
 
 

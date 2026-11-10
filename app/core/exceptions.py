@@ -44,6 +44,12 @@ class AuthError(AppError):
     message = "调用者身份缺失或非法"
 
 
+class BadRequestError(AppError):
+    status_code = 400
+    code = 1400
+    message = "请求参数不合法"
+
+
 class ForbiddenError(AppError):
     status_code = 403
     code = 1403
@@ -54,6 +60,12 @@ class NotFoundError(AppError):
     status_code = 404
     code = 1404
     message = "资源不存在"
+
+
+class ConflictError(AppError):
+    status_code = 409
+    code = 1409
+    message = "请求冲突"
 
 
 class ServiceUnavailableError(AppError):
