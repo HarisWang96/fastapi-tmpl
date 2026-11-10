@@ -12,17 +12,19 @@ keywords = ["fastapi", "async", "template", "sqlalchemy", "redis", "postgresql"]
 dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.123.2",
-    "sqlalchemy>=2.0.44",
+    "sqlalchemy[asyncio]>=2.0.44",
     "uvicorn>=0.38.0",
     "pydantic-settings>=2.5.2",
     "alembic>=1.17.2",
     "redis>=7.1.0",
+    "httpx>=0.28.0",
+    "prometheus-client>=0.26.0",
+    "aio-pika>=9.5.0",
     "loguru>=0.7.3",
 ]
 
 [project.optional-dependencies]
 test = [
-    "httpx>=0.28.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
 ]

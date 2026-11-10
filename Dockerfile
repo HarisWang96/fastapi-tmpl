@@ -24,6 +24,7 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV PYTHONUNBUFFERED=1
+ENV LOG_TO_FILE=false
 
 # Copy application code
 COPY . .

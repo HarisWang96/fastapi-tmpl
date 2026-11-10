@@ -1,16 +1,15 @@
 """database connection module"""
 
-from sqlalchemy import MetaData
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
-    create_async_engine,
     async_sessionmaker,
+    create_async_engine,
 )
-from sqlalchemy.orm import declarative_base
 
 from app.config import settings
+from app.models.platform import Base  # noqa: F401 - public model registration point
 
 # create asynchronous database engine with connection pool settings
 engine = create_async_engine(
@@ -34,12 +33,11 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
-# create base model class with schema
-metadata = MetaData(schema=settings.DATABASE_SCHEMA)
-Base = declarative_base(metadata=metadata)
+# application models inherit from the shared Base above; schema is controlled by
+# DATABASE_SCHEMA and Alembic so runtime startup never creates tables.
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+async def get_db() -> AsyncGenerator[AsyncSession]:
     """
     get database session dependency injection function
     can be used in routes: db: AsyncSession = Depends(get_db)

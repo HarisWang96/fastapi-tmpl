@@ -1,8 +1,8 @@
 """Pydantic schemas module"""
 
-from app.schemas.response import ResponseModel, ErrorResponse
+from app.schemas.response import ErrorResponse, ResponseModel
 
 __all__ = [
-    "ResponseModel",
     "ErrorResponse",
+    "ResponseModel",
 ]

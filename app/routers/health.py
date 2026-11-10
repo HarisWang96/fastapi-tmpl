@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -11,13 +11,14 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.config import settings
 from app.logger import logger
 
 router = APIRouter(tags=["health"])
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 async def _check_postgres(engine: AsyncEngine) -> dict[str, Any]:
@@ -63,6 +64,11 @@ async def _dependency_status(request: Request) -> dict[str, Any]:
         _check_redis(getattr(request.app.state, "redis", None)),
     )
     dependencies = {"postgres": postgres, "redis": redis}
+    if settings.EVENT_ENABLED:
+        runtime = getattr(request.app.state, "event_runtime", None)
+        dependencies["rabbitmq"] = {
+            "status": "up" if runtime is not None and runtime.connected else "down"
+        }
     healthy = all(item["status"] == "up" for item in dependencies.values())
     return {
         "status": "ok" if healthy else "degraded",
@@ -90,5 +96,9 @@ async def health(request: Request):
     result = await _dependency_status(request)
     return JSONResponse(
         status_code=200 if result["status"] == "ok" else 503,
-        content={"service": request.app.title, "version": request.app.version, **result},
+        content={
+            "service": request.app.title,
+            "version": request.app.version,
+            **result,
+        },
     )

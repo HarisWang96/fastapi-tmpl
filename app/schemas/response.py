@@ -1,15 +1,11 @@
 """unified API response schema"""
 
-from datetime import datetime, timezone
-from typing import Generic, TypeVar, Optional
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field
-
-# define generic type for response data
-T = TypeVar("T")
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ResponseModel(BaseModel, Generic[T]):
+class ResponseModel[T](BaseModel):
     """unified API response model
 
     all API interfaces should use this response structure
@@ -17,15 +13,9 @@ class ResponseModel(BaseModel, Generic[T]):
 
     code: int = 200
     message: str = "success"
-    data: Optional[T] = None
-    timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-
-    class Config:
-        """Pydantic configuration settings"""
-
-        json_encoders = {datetime: lambda v: v.strftime("%Y-%m-%d %H:%M:%S.%f")}
+    data: T | None = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    model_config = ConfigDict(ser_json_bytes="utf8")
 
 
 class ErrorResponse(BaseModel):
@@ -33,12 +23,5 @@ class ErrorResponse(BaseModel):
 
     code: int
     message: str
-    detail: Optional[str] = None
-    timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-
-    class Config:
-        """Pydantic configuration settings"""
-
-        json_encoders = {datetime: lambda v: v.strftime("%Y-%m-%d %H:%M:%S.%f")}
+    detail: str | None = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

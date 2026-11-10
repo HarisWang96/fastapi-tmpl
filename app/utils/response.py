@@ -1,11 +1,11 @@
 """response utility functions"""
 
-from typing import Any, Optional
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi.responses import JSONResponse
 
-from app.schemas.response import ResponseModel, ErrorResponse
+from app.schemas.response import ErrorResponse, ResponseModel
 
 
 def success_response(
@@ -27,14 +27,14 @@ def success_response(
         code=code,
         message=message,
         data=data,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
 
 
 def error_response(
     message: str = "error",
     code: int = 400,
-    detail: Optional[str] = None,
+    detail: str | None = None,
 ) -> JSONResponse:
     """create error response as JSONResponse
 
@@ -52,7 +52,7 @@ def error_response(
         code=code,
         message=message,
         detail=detail,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
     return JSONResponse(
         status_code=code,
