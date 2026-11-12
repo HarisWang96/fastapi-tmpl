@@ -21,6 +21,11 @@ dependencies = [
     "prometheus-client>=0.26.0",
     "aio-pika>=9.5.0",
     "loguru>=0.7.3",
+    "opentelemetry-api>=1.29.0",
+    "opentelemetry-sdk>=1.29.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.29.0",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-instrumentation-httpx>=0.50b0",
 ]
 
 [project.optional-dependencies]
@@ -40,3 +45,7 @@ Repository = "https://github.com/HarisWang96/fastapi-tmpl"
 [tool.uv]
 # This repository is an application, not an installable Python package.
 package = false
+
+[tool.pytest.ini_options]
+markers = ["integration: requires a running PostgreSQL database"]
+pythonpath = ["."]

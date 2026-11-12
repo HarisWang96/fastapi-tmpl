@@ -13,31 +13,38 @@ from app.config import settings
 from app.core import events, idempotency
 from app.core.metrics import render
 from app.core.middleware import RequestContextMiddleware
+from app.core.tracing import instrument_app, shutdown_tracing
 from app.database import close_db, engine
 from app.dependencies import close_authz_client
 from app.errors import register_exception_handlers
 from app.logger import logger
-from app.routers import demo, health
+from app.routers import demo, health, orders
+from app.services import order_events  # noqa: F401 - register event handlers
 from app.utils.response import success_response
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("service={} starting env={}", settings.APP_NAME, settings.APP_ENV)
-    redis = Redis.from_url(
-        settings.REDIS_URL,
-        decode_responses=True,
-        max_connections=settings.REDIS_MAX_CONNECTIONS,
-        socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
-        socket_timeout=settings.REDIS_TIMEOUT,
+    redis = (
+        Redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            max_connections=settings.REDIS_MAX_CONNECTIONS,
+            socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+            socket_timeout=settings.REDIS_TIMEOUT,
+        )
+        if settings.REDIS_ENABLED and settings.REDIS_URL
+        else None
     )
     app.state.db_engine = engine
     app.state.redis = redis
     cleanup_stop = asyncio.Event()
     cleanup_task = asyncio.create_task(idempotency.cleanup_forever(cleanup_stop))
-    event_runtime = await events.start_event_bus()
-    app.state.event_runtime = event_runtime
+    event_runtime = None
     try:
+        event_runtime = await events.start_event_bus()
+        app.state.event_runtime = event_runtime
         yield
     finally:
         cleanup_stop.set()
@@ -46,8 +53,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await cleanup_task
         await events.close_event_bus(event_runtime)
         await close_authz_client()
-        await redis.aclose()
+        if redis is not None:
+            await redis.aclose()
         await close_db()
+        shutdown_tracing()
         logger.info("service={} resources closed", settings.APP_NAME)
 
 
@@ -61,6 +70,7 @@ app = FastAPI(
     redoc_url="/redoc" if docs_enabled else None,
     openapi_url="/openapi.json" if docs_enabled else None,
 )
+instrument_app(app)
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -73,6 +83,7 @@ app.add_middleware(
 register_exception_handlers(app)
 app.include_router(health.router)
 app.include_router(demo.router)
+app.include_router(orders.router)
 
 
 @app.get("/metrics", include_in_schema=False)

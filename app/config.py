@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     LOG_TO_FILE: bool = True
     TIMEZONE: str = "Asia/Shanghai"
     METRICS_TOKEN: SecretStr | None = None
+    OTEL_ENABLED: bool = False
+    OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+    OTEL_EXPORTER_OTLP_HEADERS: str | None = None
 
     # database configuration
     DATABASE_URL: str
@@ -39,12 +42,15 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # Redis configuration
-    REDIS_URL: str
+    REDIS_URL: str | None = None
+    REDIS_ENABLED: bool = False
     REDIS_MAX_CONNECTIONS: int = 100
     REDIS_CONNECT_TIMEOUT: float = 1.0
     REDIS_TIMEOUT: float = 2.0
 
     TRUSTED_PROXY_TOKEN: SecretStr | None = None
+    AUTH_ENABLED: bool = False
+    AUTHZ_ENABLED: bool = False
     AUTHZ_BASE_URL: str = "http://authz-svc:8000"
     AUTHZ_TIMEOUT_SECONDS: float = Field(default=3, gt=0)
     AUTHZ_CACHE_TTL_SECONDS: int = Field(default=30, ge=0, le=300)
@@ -80,6 +86,7 @@ class Settings(BaseSettings):
         "TRUSTED_PROXY_TOKEN",
         "INTERNAL_API_TOKEN",
         "EVENT_BROKER_URL",
+        "OTEL_EXPORTER_OTLP_HEADERS",
         mode="before",
     )
     @classmethod
@@ -92,13 +99,20 @@ class Settings(BaseSettings):
             ZoneInfo(self.TIMEZONE)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError(f"Invalid TIMEZONE: {self.TIMEZONE!r}") from exc
-        if self.APP_ENV == "prod":
-            if self.METRICS_TOKEN is None:
-                raise ValueError("METRICS_TOKEN is required in production")
-            if self.INTERNAL_API_TOKEN is None:
-                raise ValueError("INTERNAL_API_TOKEN is required in production")
+        if self.APP_ENV == "prod" and self.METRICS_TOKEN is None:
+            raise ValueError("METRICS_TOKEN is required in production")
+        if self.APP_ENV == "prod" and self.DEBUG:
+            raise ValueError("DEBUG must be false in production")
+        if self.AUTH_ENABLED and self.TRUSTED_PROXY_TOKEN is None:
+            raise ValueError("TRUSTED_PROXY_TOKEN is required when AUTH_ENABLED")
+        if self.AUTHZ_ENABLED and not self.AUTH_ENABLED:
+            raise ValueError("AUTH_ENABLED is required when AUTHZ_ENABLED=true")
+        if self.AUTHZ_ENABLED and self.INTERNAL_API_TOKEN is None:
+            raise ValueError("INTERNAL_API_TOKEN is required when AUTHZ_ENABLED")
         if self.EVENT_ENABLED and self.EVENT_BROKER_URL is None:
             raise ValueError("EVENT_BROKER_URL is required when EVENT_ENABLED=true")
+        if self.REDIS_ENABLED and self.REDIS_URL is None:
+            raise ValueError("REDIS_URL is required when REDIS_ENABLED=true")
         return self
 
 

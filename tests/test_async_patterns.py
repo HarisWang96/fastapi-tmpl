@@ -1,9 +1,12 @@
 """Database-independent checks for async idempotency/outbox conventions."""
 
+import asyncio
 from datetime import UTC, datetime
 
 from fastapi import Response
 
+from app.config import settings
+from app.core.events import _retry_or_dead_letter
 from app.core.idempotency import _pack, _replay
 from app.models.platform import IdempotencyRecord
 
@@ -54,3 +57,61 @@ def test_platform_metadata_uses_configured_postgres_schema():
         "sys_outbox",
         "sys_event_consumed",
     }
+
+
+def test_event_failures_are_retried_then_sent_to_dead_letter(monkeypatch):
+    class Exchange:
+        def __init__(self):
+            self.published = []
+
+        async def publish(self, message, routing_key):
+            self.published.append((message, routing_key))
+
+    class Original:
+        body = b'{"id": 1}'
+        content_type = "application/json"
+        content_encoding = None
+        delivery_mode = None
+        priority = None
+        correlation_id = None
+        reply_to = None
+        expiration = None
+        message_id = "event-1"
+        timestamp = None
+        type = None
+        app_id = None
+        routing_key = "order.created"
+
+        def __init__(self):
+            self.headers = {}
+            self.acked = False
+            self.nacked = False
+
+        async def ack(self):
+            self.acked = True
+
+        async def nack(self, *, requeue):
+            self.nacked = requeue
+
+    async def run():
+        monkeypatch.setattr(settings, "CONSUMER_MAX_RETRIES", 1)
+        monkeypatch.setattr(settings, "CONSUMER_RETRY_BACKOFF_SECONDS", 0)
+        normal, dead = Exchange(), Exchange()
+        runtime = type(
+            "Runtime", (), {"exchange": normal, "dead_letter_exchange": dead}
+        )()
+        original = Original()
+
+        await _retry_or_dead_letter(runtime, None, original)
+        assert original.acked
+        retry, topic = normal.published[0]
+        assert topic == "order.created"
+        assert retry.headers["x-consumer-retries"] == 1
+
+        second = Original()
+        second.headers = retry.headers
+        await _retry_or_dead_letter(runtime, None, second)
+        assert second.acked
+        assert dead.published[0][1] == "order.created"
+
+    asyncio.run(run())

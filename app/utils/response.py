@@ -36,18 +36,6 @@ def error_response(
     code: int = 400,
     detail: str | None = None,
 ) -> JSONResponse:
-    """create error response as JSONResponse
-
-    Used in exception handlers where HTTP status code needs to be set.
-
-    Args:
-        message: error message
-        code: error status code, default 400
-        detail: detailed error information
-
-    Returns:
-        JSONResponse: FastAPI JSON response with proper HTTP status code
-    """
     error = ErrorResponse(
         code=code,
         message=message,

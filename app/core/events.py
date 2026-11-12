@@ -53,15 +53,32 @@ async def emit_event(
 
 class EventRuntime:
     def __init__(
-        self, connection, exchange, stop: asyncio.Event, tasks: list[asyncio.Task]
+        self,
+        connection,
+        exchange,
+        dead_letter_exchange,
+        stop: asyncio.Event,
+        tasks: list[asyncio.Task],
     ):
-        self.connection, self.exchange, self.stop, self.tasks = (
+        (
+            self.connection,
+            self.exchange,
+            self.dead_letter_exchange,
+            self.stop,
+            self.tasks,
+        ) = (
             connection,
             exchange,
+            dead_letter_exchange,
             stop,
             tasks,
         )
-        self.connected = True
+
+    @property
+    def connected(self) -> bool:
+        return not self.connection.is_closed and all(
+            not task.done() for task in self.tasks
+        )
 
 
 async def _relay(runtime: EventRuntime) -> None:
@@ -132,7 +149,9 @@ async def _relay(runtime: EventRuntime) -> None:
 
 async def _consume(runtime: EventRuntime, queue_name: str) -> None:
     channel = await runtime.connection.channel()
-    await channel.set_qos(prefetch_count=10)
+    await channel.set_qos(prefetch_count=settings.CONSUMER_PREFETCH)
+    dead_letter_queue = await channel.declare_queue(f"{queue_name}.dead", durable=True)
+    await dead_letter_queue.bind(runtime.dead_letter_exchange, routing_key="#")
     queue = await channel.declare_queue(queue_name, durable=True)
     for topic in _handlers:
         await queue.bind(runtime.exchange, routing_key=topic)
@@ -145,32 +164,71 @@ async def _consume(runtime: EventRuntime, queue_name: str) -> None:
                 payload = json.loads(message.body)
                 if not event_id or not isinstance(payload, dict):
                     raise ValueError("invalid event")
-                async with AsyncSessionLocal() as session:
+                async with AsyncSessionLocal() as session, session.begin():
                     duplicate = await session.scalar(
                         select(EventConsumed.id).where(
                             EventConsumed.event_id == event_id
                         )
                     )
-                if duplicate:
-                    await message.ack()
-                    continue
-                for handler in _handlers.get(message.routing_key or "", []):
-                    result = handler(payload, dict(message.headers or {}))
-                    if asyncio.iscoroutine(result):
-                        await result
-                async with AsyncSessionLocal() as session:
-                    session.add(
-                        EventConsumed(
-                            event_id=event_id,
-                            topic=message.routing_key or "",
-                            consumed_at=datetime.now(UTC),
-                        )
+                    if duplicate:
+                        await message.ack()
+                        continue
+                    consumed = EventConsumed(
+                        event_id=event_id,
+                        topic=message.routing_key or "",
+                        consumed_at=datetime.now(UTC),
                     )
-                    await session.commit()
+                    session.add(consumed)
+                    await session.flush()
+                    for handler in _handlers.get(message.routing_key or "", []):
+                        result = handler(session, payload, dict(message.headers or {}))
+                        if asyncio.iscoroutine(result):
+                            await result
                 await message.ack()
-            except Exception:  # noqa: BLE001 - handler failures nack the message for retry
-                logger.exception("event handler failed; message will be retried")
-                await message.nack(requeue=True)
+            except Exception:  # noqa: BLE001 - handler failures follow bounded retry policy
+                logger.exception("event handler failed")
+                await _retry_or_dead_letter(runtime, channel, message)
+
+
+async def _retry_or_dead_letter(runtime, channel, message) -> None:
+    headers = dict(message.headers or {})
+    try:
+        retries = int(headers.get("x-consumer-retries", 0))
+    except (TypeError, ValueError):
+        retries = 0
+    topic = message.routing_key or ""
+    if retries < settings.CONSUMER_MAX_RETRIES:
+        retries += 1
+        headers["x-consumer-retries"] = retries
+        delay = min(300, settings.CONSUMER_RETRY_BACKOFF_SECONDS * (2 ** (retries - 1)))
+        if delay:
+            await asyncio.sleep(delay)
+        exchange = runtime.exchange
+    else:
+        exchange = runtime.dead_letter_exchange
+
+    try:
+        forwarded = aio_pika.Message(
+            body=message.body,
+            headers=headers,
+            content_type=message.content_type,
+            content_encoding=message.content_encoding,
+            delivery_mode=message.delivery_mode or aio_pika.DeliveryMode.PERSISTENT,
+            priority=message.priority,
+            correlation_id=message.correlation_id,
+            reply_to=message.reply_to,
+            expiration=message.expiration,
+            message_id=message.message_id,
+            timestamp=message.timestamp,
+            type=message.type,
+            app_id=message.app_id,
+        )
+        await exchange.publish(forwarded, routing_key=topic)
+    except Exception:  # noqa: BLE001 - retain original if forwarding fails
+        logger.exception("could not forward failed event; requeueing original")
+        await message.nack(requeue=True)
+    else:
+        await message.ack()
 
 
 async def start_event_bus() -> EventRuntime | None:
@@ -180,12 +238,19 @@ async def start_event_bus() -> EventRuntime | None:
     connection = await aio_pika.connect_robust(
         settings.EVENT_BROKER_URL.get_secret_value()
     )
-    channel = await connection.channel(publisher_confirms=True)
-    exchange = await channel.declare_exchange(
-        settings.EVENT_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
-    )
+    try:
+        channel = await connection.channel(publisher_confirms=True)
+        exchange = await channel.declare_exchange(
+            settings.EVENT_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+        )
+        dead_letter_exchange = await channel.declare_exchange(
+            settings.EVENT_DLX_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+        )
+    except Exception:
+        await connection.close()
+        raise
     stop = asyncio.Event()
-    runtime = EventRuntime(connection, exchange, stop, [])
+    runtime = EventRuntime(connection, exchange, dead_letter_exchange, stop, [])
     runtime.tasks.append(asyncio.create_task(_relay(runtime)))
     if _handlers:
         queue = settings.EVENT_QUEUE or f"{settings.APP_NAME}.events"

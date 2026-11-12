@@ -2,7 +2,4 @@
 
 from app.schemas.response import ErrorResponse, ResponseModel
 
-__all__ = [
-    "ErrorResponse",
-    "ResponseModel",
-]
+__all__ = ["ErrorResponse", "ResponseModel"]

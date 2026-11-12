@@ -25,6 +25,8 @@ async def get_caller(
     x_app_id: Annotated[str | None, Header(alias="X-App-Id")] = None,
     x_proxy_token: Annotated[str | None, Header(alias="X-Proxy-Token")] = None,
 ) -> Caller:
+    if not settings.AUTH_ENABLED:
+        raise ServiceUnavailableError("Identity authentication is not enabled")
     expected = settings.TRUSTED_PROXY_TOKEN
     if expected and (
         not x_proxy_token
@@ -53,6 +55,8 @@ _authz: AuthzClient | None = None
 
 def get_authz_client() -> AuthzClient:
     global _authz
+    if not settings.AUTHZ_ENABLED:
+        raise ServiceUnavailableError("Authorization integration is not enabled")
     if _authz is None:
         if settings.INTERNAL_API_TOKEN is None:
             raise ServiceUnavailableError("INTERNAL_API_TOKEN is not configured")

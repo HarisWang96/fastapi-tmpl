@@ -1,5 +1,5 @@
 # Build stage
-FROM python:3.13-slim as builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
@@ -24,10 +24,17 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV LOG_TO_FILE=false
 
 # Copy application code
 COPY . .
+
+# The service only needs read access to its code and writes logs to stderr.
+RUN addgroup --system app && adduser --system --ingroup app app \
+    && mkdir -p /opt/prod-sim \
+    && chown -R app:app /app
+USER app
 
 # Expose port
 EXPOSE 8000

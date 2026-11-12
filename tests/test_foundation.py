@@ -18,6 +18,16 @@ def test_request_id_is_validated_and_returned(client):
     assert generated.headers["x-request-id"] != "bad id"
 
 
+def test_traceparent_extracts_w3c_trace_id():
+    trace_id = "0123456789abcdef0123456789abcdef"
+    from app.core.middleware import _traceparent
+
+    assert _traceparent(
+        {"headers": [(b"traceparent", f"00-{trace_id}-0123456789abcdef-01".encode())]}
+    ) == trace_id
+    assert _traceparent({"headers": [(b"traceparent", b"invalid")]}) is None
+
+
 def test_error_envelope_and_validation_details_are_hidden(client):
     response = client.get("/api/v1/demo/hello/" + "x" * 60)
     assert response.status_code == 422
@@ -43,6 +53,49 @@ def test_production_configuration_requires_secrets():
             APP_ENV="prod",
             DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
             REDIS_URL="redis://localhost",
+        )
+
+
+def test_production_configuration_rejects_debug_mode():
+    with pytest.raises(ValidationError, match="DEBUG must be false"):
+        Settings(
+            APP_ENV="prod",
+            DEBUG=True,
+            METRICS_TOKEN=SecretStr("test-only"),
+            DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
+            _env_file=None,
+        )
+
+
+def test_optional_redis_does_not_require_a_url():
+    config = Settings(
+        APP_ENV="test",
+        DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
+        REDIS_URL=None,
+        REDIS_ENABLED=False,
+        _env_file=None,
+    )
+    assert config.REDIS_URL is None
+
+
+def test_enabled_identity_requires_proxy_secret():
+    with pytest.raises(ValidationError, match="TRUSTED_PROXY_TOKEN"):
+        Settings(
+            APP_ENV="test",
+            DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
+            AUTH_ENABLED=True,
+            _env_file=None,
+        )
+
+
+def test_enabled_redis_requires_url():
+    with pytest.raises(ValidationError, match="REDIS_URL"):
+        Settings(
+            APP_ENV="test",
+            DATABASE_URL="postgresql+asyncpg://u:p@localhost/db",
+            REDIS_URL=None,
+            REDIS_ENABLED=True,
+            _env_file=None,
         )
 
 

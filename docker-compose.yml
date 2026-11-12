@@ -9,6 +9,7 @@ services:
       DEBUG: "false"
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/fastapi
       REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -21,6 +22,125 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+
+  prod-sim-api:
+    profiles: ["prod-sim"]
+    build: .
+    ports:
+      - "18000:8000"
+    environment:
+      APP_NAME: fastapi-prod-sim
+      APP_VERSION: 0.1.0
+      APP_ENV: prod
+      DEBUG: "false"
+      LOG_TO_FILE: "false"
+      DATABASE_URL: postgresql+asyncpg://prod_sim:local-only-test-secret@prod-sim-db:5432/fastapi_prod_sim
+      REDIS_URL: redis://prod-sim-redis:6379/0
+      REDIS_ENABLED: "true"
+      METRICS_TOKEN: local-only-metrics-test-token
+      AUTH_ENABLED: "true"
+      AUTHZ_ENABLED: "true"
+      TRUSTED_PROXY_TOKEN: local-only-proxy-test-token
+      AUTHZ_BASE_URL: http://prod-sim-authz:8000
+      INTERNAL_API_TOKEN: local-only-internal-test-token
+      EVENT_ENABLED: "true"
+      EVENT_BROKER_URL: amqp://guest:guest@prod-sim-rabbitmq:5672/
+      EVENT_QUEUE: fastapi-prod-sim.events
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://prod-sim-otel:4318/v1/traces
+    depends_on:
+      prod-sim-db:
+        condition: service_healthy
+      prod-sim-redis:
+        condition: service_healthy
+      prod-sim-rabbitmq:
+        condition: service_healthy
+      prod-sim-authz:
+        condition: service_started
+      prod-sim-otel:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: "no"
+
+  prod-sim-db:
+    profiles: ["prod-sim"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: prod_sim
+      POSTGRES_PASSWORD: local-only-test-secret
+      POSTGRES_DB: fastapi_prod_sim
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prod_sim -d fastapi_prod_sim"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  prod-sim-redis:
+    profiles: ["prod-sim"]
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  prod-sim-rabbitmq:
+    profiles: ["prod-sim"]
+    image: rabbitmq:4-alpine
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  prod-sim-authz:
+    profiles: ["prod-sim"]
+    image: fastapi-tmpl-prod-sim-api
+    command: ["python", "/opt/prod-sim/authz_stub.py"]
+    volumes:
+      - ./tests/support/authz_stub.py:/opt/prod-sim/authz_stub.py:ro
+    environment:
+      INTERNAL_API_TOKEN: local-only-internal-test-token
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prod-sim-otel:
+    profiles: ["prod-sim"]
+    image: fastapi-tmpl-prod-sim-api
+    command: ["python", "/opt/prod-sim/otel_receiver.py"]
+    volumes:
+      - ./tests/support/otel_receiver.py:/opt/prod-sim/otel_receiver.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4318/stats')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  test-db:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: fastapi_test
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d fastapi_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data
 
   postgres:
     image: postgres:16-alpine

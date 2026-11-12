@@ -14,6 +14,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
@@ -71,35 +72,45 @@ def _replay(record: IdempotencyRecord) -> Response:
     )
 
 
-async def _claim(scope: str, key: str, digest: str) -> IdempotencyRecord | None:
-    async with AsyncSessionLocal() as session:
-        record = IdempotencyRecord(
-            scope=scope,
-            idem_key=key,
-            request_hash=digest,
-            status=_IN_PROGRESS,
-            created_at=_now(),
-            expires_at=_now() + timedelta(seconds=settings.IDEMPOTENCY_TTL_SECONDS),
-        )
-        session.add(record)
-        try:
-            await session.commit()
-            return None
-        except IntegrityError:
-            await session.rollback()
+async def _claim(
+    session: AsyncSession, scope: str, key: str, digest: str
+) -> tuple[IdempotencyRecord, bool]:
+    """Claim a key inside the caller's transaction; return (record, is_new)."""
+    now = _now()
+    record = IdempotencyRecord(
+        scope=scope,
+        idem_key=key,
+        request_hash=digest,
+        status=_IN_PROGRESS,
+        created_at=now,
+        expires_at=now + timedelta(seconds=settings.IDEMPOTENCY_TTL_SECONDS),
+    )
+    try:
+        # The savepoint lets us recover from a concurrent unique-key conflict
+        # without poisoning the surrounding business transaction.
+        async with session.begin_nested():
+            session.add(record)
+            await session.flush()
+        return record, True
+    except IntegrityError:
         existing = await session.scalar(
-            select(IdempotencyRecord).where(
-                IdempotencyRecord.scope == scope, IdempotencyRecord.idem_key == key
-            )
+            select(IdempotencyRecord)
+            .where(IdempotencyRecord.scope == scope, IdempotencyRecord.idem_key == key)
+            .with_for_update()
         )
         if existing is None:
             raise IdempotencyError("Could not claim idempotency key")
-        if existing.expires_at <= _now():
-            await session.execute(
-                delete(IdempotencyRecord).where(IdempotencyRecord.id == existing.id)
+        if existing.expires_at <= now:
+            existing.request_hash = digest
+            existing.status = _IN_PROGRESS
+            existing.response_status = None
+            existing.response_body = None
+            existing.response_headers = None
+            existing.created_at = now
+            existing.expires_at = now + timedelta(
+                seconds=settings.IDEMPOTENCY_TTL_SECONDS
             )
-            await session.commit()
-            return await _claim(scope, key, digest)
+            return existing, True
         if existing.request_hash != digest:
             raise IdempotencyError(
                 "Idempotency-Key was already used with a different request", 409, 1409
@@ -108,40 +119,16 @@ async def _claim(scope: str, key: str, digest: str) -> IdempotencyRecord | None:
             raise IdempotencyError(
                 "Request with this Idempotency-Key is still in progress", 409, 1409
             )
-        return existing
-
-
-async def _complete(
-    scope: str, key: str, status: int, body: Any, headers: dict[str, str]
-) -> None:
-    async with AsyncSessionLocal() as session:
-        record = await session.scalar(
-            select(IdempotencyRecord).where(
-                IdempotencyRecord.scope == scope, IdempotencyRecord.idem_key == key
-            )
-        )
-        if record is not None:
-            record.status = _COMPLETED
-            record.response_status = status
-            record.response_body = body
-            record.response_headers = headers
-            await session.commit()
-
-
-async def _abort(scope: str, key: str) -> None:
-    async with AsyncSessionLocal() as session:
-        await session.execute(
-            delete(IdempotencyRecord).where(
-                IdempotencyRecord.scope == scope,
-                IdempotencyRecord.idem_key == key,
-                IdempotencyRecord.status == _IN_PROGRESS,
-            )
-        )
-        await session.commit()
+        return existing, False
 
 
 def idempotent(*, required: bool = False, status_code: int = 200) -> Callable[[F], F]:
-    """Wrap an endpoint. For plain values, pass the route's non-200 status_code."""
+    """Wrap an AsyncSession endpoint in one business + idempotency transaction.
+
+    The handler must accept ``request: Request`` and ``db: AsyncSession`` and
+    must not commit or begin its own transaction. For plain values, pass the
+    route's non-200 status_code.
+    """
 
     def decorate(func: F) -> F:
         @functools.wraps(func)
@@ -151,37 +138,59 @@ def idempotent(*, required: bool = False, status_code: int = 200) -> Callable[[F
             )
             if request is None:
                 raise RuntimeError("idempotent endpoint must declare request: Request")
+            session = kwargs.get("db") or next(
+                (arg for arg in args if isinstance(arg, AsyncSession)), None
+            )
+            if not isinstance(session, AsyncSession):
+                raise TypeError(
+                    "idempotent endpoint must declare db: AsyncSession"
+                )
             key = (request.headers.get("Idempotency-Key") or "").strip()
             if not key:
                 if required:
                     raise IdempotencyError("Missing Idempotency-Key", 400, 1400)
-                return await _invoke(func, args, kwargs)
+                async with session.begin():
+                    return await _invoke(func, args, kwargs)
             if len(key) > 128:
                 raise IdempotencyError(
                     "Idempotency-Key exceeds 128 characters", 400, 1400
                 )
             scope = _scope(request)
-            digest = hashlib.sha256(await request.body()).hexdigest()
-            existing = await _claim(scope, key, digest)
+            request_fingerprint = b"\0".join(
+                (
+                    request.method.upper().encode(),
+                    request.url.path.encode(),
+                    request.url.query.encode(),
+                    await request.body(),
+                )
+            )
+            digest = hashlib.sha256(request_fingerprint).hexdigest()
             fingerprint = hashlib.sha256(key.encode()).hexdigest()[:12]
-            if existing is not None:
+            replay: IdempotencyRecord | None = None
+            async with session.begin():
+                record, is_new = await _claim(session, scope, key, digest)
+                if not is_new:
+                    replay = record
+                else:
+                    result = await _invoke(func, args, kwargs)
+                    await session.flush()
+                    status, body, headers = _pack(result)
+                    if not isinstance(result, Response):
+                        status = status_code
+                    record.status = _COMPLETED
+                    record.response_status = status
+                    record.response_body = body
+                    record.response_headers = headers
+
+            if replay is not None:
                 logger.info(
                     "idempotency replay method={} path={} key_hash={}",
                     request.method,
                     request.url.path,
                     fingerprint,
                 )
-                return _replay(existing)
-            try:
-                result = await _invoke(func, args, kwargs)
-                status, body, headers = _pack(result)
-                if not isinstance(result, Response):
-                    status = status_code
-                await _complete(scope, key, status, body, headers)
-                return result
-            except BaseException:
-                await _abort(scope, key)
-                raise
+                return _replay(replay)
+            return result
 
         return wrapper  # type: ignore[return-value]
 

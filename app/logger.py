@@ -7,7 +7,7 @@ from pathlib import Path
 from loguru import logger
 
 from app.config import settings
-from app.context import request_id_ctx
+from app.context import request_id_ctx, trace_id_ctx
 
 
 def setup_logging():
@@ -84,6 +84,9 @@ def _patch_record(record: dict) -> None:
     request_id = request_id_ctx.get()
     if request_id:
         record["extra"].setdefault("request_id", request_id)
+    trace_id = trace_id_ctx.get()
+    if trace_id:
+        record["extra"].setdefault("trace_id", trace_id)
 
 
 # Initialize logger

@@ -22,6 +22,8 @@ ENV
 .pytest_cache
 .coverage
 htmlcov
+tests
+test-results
 
 # Logs
 logs
@@ -44,3 +46,4 @@ docs/_build
 !README.md
 Makefile
 scripts
+.github

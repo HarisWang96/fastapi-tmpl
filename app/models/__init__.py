@@ -7,6 +7,7 @@
 
 # __all__ = ["User", "Item"]
 
+from app.models.order import Order
 from app.models.platform import EventConsumed, IdempotencyRecord, OutboxEvent
 
-__all__ = ["EventConsumed", "IdempotencyRecord", "OutboxEvent"]
+__all__ = ["EventConsumed", "IdempotencyRecord", "Order", "OutboxEvent"]

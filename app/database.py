@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
+from app.models.order import Order  # noqa: F401 - register example business model
 from app.models.platform import Base  # noqa: F401 - public model registration point
 
 # create asynchronous database engine with connection pool settings

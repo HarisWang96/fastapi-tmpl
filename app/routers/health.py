@@ -1,6 +1,5 @@
 """Application liveness, readiness and dependency health checks."""
 
-import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -59,11 +58,12 @@ async def _check_redis(redis: Redis | None) -> dict[str, Any]:
 
 
 async def _dependency_status(request: Request) -> dict[str, Any]:
-    postgres, redis = await asyncio.gather(
-        _check_postgres(request.app.state.db_engine),
-        _check_redis(getattr(request.app.state, "redis", None)),
-    )
-    dependencies = {"postgres": postgres, "redis": redis}
+    postgres = await _check_postgres(request.app.state.db_engine)
+    dependencies = {"postgres": postgres}
+    if settings.REDIS_ENABLED:
+        dependencies["redis"] = await _check_redis(
+            getattr(request.app.state, "redis", None)
+        )
     if settings.EVENT_ENABLED:
         runtime = getattr(request.app.state, "event_runtime", None)
         dependencies["rabbitmq"] = {
